@@ -32,6 +32,24 @@ make calm        # recover; the alert resolves
 | **Reproducible** | Helm charts pinned, kustomize overlays, a Makefile for everything. kubeconform validates every manifest, including the rendered Helm output |
 | **Chaos in CI** | The GitHub Actions e2e job injects a 30% error rate and asserts the page reaches Alertmanager and the error logs reach Loki, then captures screenshots |
 
+## Screenshots
+
+These are captured automatically by the CI e2e job ([`verify.sh`](scripts/verify.sh)) during its chaos test:
+30% injected errors, then recovery.
+
+**Grafana: SLO and RED overview.** The red band is the `DemoAppErrorBudgetBurnFast` alert annotation. The
+burn rate peaks around 50x, the error logs show up in Loki, and the 5m window recovers first.
+
+![Grafana SLO dashboard during the chaos test](docs/images/grafana-dashboard.png)
+
+<sub>On a fresh CI cluster that is only about 15 minutes old, "Error budget left (30d)" is calculated from just
+those minutes of data, so it shows a large negative number. On a long-running cluster it reflects the real
+30-day window.</sub>
+
+**Alertmanager: the page was routed to `oncall-page`.**
+
+![Alertmanager routing the fast-burn alert to oncall-page](docs/images/alertmanager-firing.png)
+
 ## Architecture
 
 ```mermaid
