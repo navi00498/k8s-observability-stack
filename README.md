@@ -85,7 +85,14 @@ flowchart LR
 
 ## Quick start
 
-**Prerequisites:** Docker, [kind](https://kind.sigs.k8s.io/), kubectl, Helm 3, and about 4 GB of free RAM.
+**Prerequisites:** Docker (Docker Desktop, Colima or Rancher Desktop with **at least 4 GB of memory** assigned),
+[kind](https://kind.sigs.k8s.io/), kubectl, Helm 3, `curl` and `jq`. Works on macOS (Intel and Apple Silicon) and
+Linux; on Windows, use WSL2.
+
+```bash
+brew install kind kubectl helm jq          # macOS; then start Docker
+make preflight                             # checks tools, Docker daemon and Docker memory
+```
 
 ```bash
 git clone https://github.com/navi00498/k8s-observability-stack && cd k8s-observability-stack
@@ -138,6 +145,14 @@ make latency    # +600ms: DemoAppHighLatency (p95 > 500ms for 10m) → team-tick
 
 The alert links to its runbook section, for example
 [DemoAppErrorBudgetBurnFast](docs/runbooks.md#demoapperrorbudgetburnfast).
+
+## Offline tests (no cluster needed)
+
+```bash
+brew install yq prometheus kubeconform     # promtool ships with the prometheus formula
+make test    # demo-app unit tests (in a local .venv) + promtool SLO alert tests
+make lint    # kubeconform on all manifests and rendered Helm charts, dashboard lint + PromQL check
+```
 
 ## How the SLO alerts work
 

@@ -4,10 +4,14 @@ MON_NS        ?= monitoring
 KPS_VERSION   ?= 92.22.0
 LOKI_VERSION  ?= 7.5.0
 ALLOY_VERSION ?= 1.15.0
+VENV          := .venv
 CRD_SCHEMAS   := https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
 
+# bash + pipefail on every pipeline: macOS ships GNU Make 3.81, which ignores .SHELLFLAGS
+SHELL         := bash
+PIPEFAIL      := set -o pipefail;
 .DEFAULT_GOAL := help
-.PHONY: help up down cluster image repos install apps verify chaos-test chaos latency calm \
+.PHONY: help preflight up down cluster image repos install apps verify chaos-test chaos latency calm \
         grafana prometheus alertmanager test test-app test-rules lint lint-manifests lint-dashboards
 
 help: ## Show available targets
@@ -15,8 +19,20 @@ help: ## Show available targets
 
 ## ---- Lab lifecycle -------------------------------------------------------
 
-up: cluster image install apps ## Create the kind cluster and deploy everything
-	@echo "\nReady. Run 'make grafana' and open http://localhost:3000 (admin/admin)."
+preflight: ## Check that the required tools are installed and Docker is running
+	@missing=0; for tool in docker kind kubectl helm curl jq; do \
+	  command -v $$tool >/dev/null || { echo "missing: $$tool"; missing=1; }; \
+	done; [ $$missing -eq 0 ] || { echo "Install the tools above (see README > Quick start)."; exit 1; }
+	@docker info >/dev/null 2>&1 || { echo "Docker is not running. Start Docker Desktop / Colima / Podman and retry."; exit 1; }
+	@mem=$$(docker info --format '{{.MemTotal}}'); \
+	  if [ "$$mem" -lt 3800000000 ]; then \
+	    echo "warning: Docker has $$((mem / 1024 / 1024)) MiB of memory; the stack needs about 4 GiB."; \
+	    echo "         Raise it in Docker Desktop > Settings > Resources (or: colima start --memory 6)."; \
+	  fi
+	@echo "preflight ok"
+
+up: preflight cluster image install apps ## Create the kind cluster and deploy everything
+	@printf "\nReady. Run 'make grafana' and open http://localhost:3000 (admin/admin).\n"
 
 down: ## Delete the kind cluster
 	kind delete cluster --name $(CLUSTER)
@@ -77,8 +93,13 @@ alertmanager: ## Alertmanager on http://localhost:9093
 
 test: test-app test-rules ## Run all offline tests
 
-test-app: ## Unit tests for demo-app
-	cd app && python3 -m unittest discover -s tests -v
+$(VENV)/.installed: app/requirements.txt
+	python3 -m venv $(VENV)
+	$(VENV)/bin/pip install -q -r app/requirements.txt
+	@touch $@
+
+test-app: $(VENV)/.installed ## Unit tests for demo-app (creates .venv on first run)
+	cd app && ../$(VENV)/bin/python -m unittest discover -s tests -v
 
 build/demo-app-slo.rules.yaml: k8s/monitoring/prometheusrule-demo-app-slo.yaml
 	@mkdir -p build
@@ -91,13 +112,13 @@ test-rules: build/demo-app-slo.rules.yaml ## promtool: check and unit-test the S
 lint: lint-manifests lint-dashboards ## Validate manifests, Helm values and dashboards
 
 lint-manifests:
-	kubectl kustomize k8s/demo-app | kubeconform -strict -summary -schema-location default -schema-location '$(CRD_SCHEMAS)'
-	kubectl kustomize k8s/monitoring | kubeconform -strict -summary -schema-location default -schema-location '$(CRD_SCHEMAS)'
-	helm template kps prometheus-community/kube-prometheus-stack --version $(KPS_VERSION) -n $(MON_NS) -f helm/kube-prometheus-stack.yaml \
+	$(PIPEFAIL) kubectl kustomize k8s/demo-app | kubeconform -strict -summary -schema-location default -schema-location '$(CRD_SCHEMAS)'
+	$(PIPEFAIL) kubectl kustomize k8s/monitoring | kubeconform -strict -summary -schema-location default -schema-location '$(CRD_SCHEMAS)'
+	$(PIPEFAIL) helm template kps prometheus-community/kube-prometheus-stack --version $(KPS_VERSION) -n $(MON_NS) -f helm/kube-prometheus-stack.yaml \
 	  | kubeconform -summary -ignore-missing-schemas -schema-location default -schema-location '$(CRD_SCHEMAS)'
-	helm template loki grafana/loki --version $(LOKI_VERSION) -n $(MON_NS) -f helm/loki.yaml \
+	$(PIPEFAIL) helm template loki grafana/loki --version $(LOKI_VERSION) -n $(MON_NS) -f helm/loki.yaml \
 	  | kubeconform -summary -ignore-missing-schemas -schema-location default
-	helm template alloy grafana/alloy --version $(ALLOY_VERSION) -n $(MON_NS) -f helm/alloy.yaml \
+	$(PIPEFAIL) helm template alloy grafana/alloy --version $(ALLOY_VERSION) -n $(MON_NS) -f helm/alloy.yaml \
 	  | kubeconform -summary -ignore-missing-schemas -schema-location default
 
 lint-dashboards:

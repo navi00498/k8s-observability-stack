@@ -12,8 +12,13 @@ TRIES=${TRIES:-40}
 SLEEP=${SLEEP:-6}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
+for tool in kubectl curl jq; do
+  command -v "$tool" >/dev/null || { echo "verify.sh needs '$tool' on PATH" >&2; exit 1; }
+done
+
 pids=()
-cleanup() { for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done; }
+# "${pids[@]+...}" keeps macOS bash 3.2 happy under `set -u` when the array is empty
+cleanup() { for pid in ${pids[@]+"${pids[@]}"}; do kill "$pid" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
 port_forward() { # namespace service local:remote
