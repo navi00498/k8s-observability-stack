@@ -1,0 +1,204 @@
+# Unit tests for the demo-app SLO rules. Run with `make test-rules`.
+rule_files:
+  - ../../build/demo-app-slo.rules.yaml
+
+evaluation_interval: 30s
+
+tests:
+  - name: 10% errors pages (fast burn) and opens a ticket (slow burn)
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="demo-app",code="200"}'
+        values: "0+90x90"
+      - series: 'http_requests_total{job="demo-app",code="500"}'
+        values: "0+10x90"
+      - series: 'up{job="demo-app",instance="a"}'
+        values: "1x90"
+    promql_expr_test:
+      - expr: job:slo_errors_per_request:ratio_rate1h
+        eval_time: 70m
+        exp_samples:
+          - labels: 'job:slo_errors_per_request:ratio_rate1h{job="demo-app",slo="availability"}'
+            value: 0.1
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: DemoAppErrorBudgetBurnFast
+        exp_alerts:
+          - exp_labels:
+              job: demo-app
+              slo: availability
+              severity: critical
+            exp_annotations:
+              summary: demo-app is burning its error budget fast
+              description: "10% of requests are failing. At this rate the 30-day error budget is gone within days."
+              runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoapperrorbudgetburnfast
+      - eval_time: 70m
+        alertname: DemoAppErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels:
+              job: demo-app
+              slo: availability
+              severity: warning
+            exp_annotations:
+              summary: demo-app is slowly burning its error budget
+              description: "10% of requests are failing, above the sustainable rate for a 99.5% SLO."
+              runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoapperrorbudgetburnslow
+      - eval_time: 70m
+        alertname: DemoAppDown
+        exp_alerts: []
+
+  - name: 2% errors is a slow burn - ticket, but no page
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="demo-app",code="200"}'
+        values: "0+98x90"
+      - series: 'http_requests_total{job="demo-app",code="503"}'
+        values: "0+2x90"
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: DemoAppErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: DemoAppErrorBudgetBurnSlow
+        exp_alerts:
+          - exp_labels:
+              job: demo-app
+              slo: availability
+              severity: warning
+            exp_annotations:
+              summary: demo-app is slowly burning its error budget
+              description: "2% of requests are failing, above the sustainable rate for a 99.5% SLO."
+              runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoapperrorbudgetburnslow
+
+  - name: a 3-minute error spike is visible on the 5m window but does not page
+    interval: 1m
+    input_series:
+      # 7h of healthy history first, so the 6h window is fully populated
+      - series: 'http_requests_total{job="demo-app",code="200"}'
+        values: "0+100x480"
+      # 50% of requests fail between minute 420 and 423, then traffic is healthy again
+      - series: 'http_requests_total{job="demo-app",code="500"}'
+        values: "0x420 100+100x2 300x57"
+    promql_expr_test:
+      - expr: job:slo_errors_per_request:ratio_rate5m > bool (14.4 * 0.005)
+        eval_time: 424m
+        exp_samples:
+          - labels: '{job="demo-app",slo="availability"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 424m
+        alertname: DemoAppErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 426m
+        alertname: DemoAppErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 435m
+        alertname: DemoAppErrorBudgetBurnFast
+        exp_alerts: []
+
+  - name: healthy traffic with no 5xx series at all stays quiet and reports a 0% error ratio
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="demo-app",code="200"}'
+        values: "0+100x90"
+      - series: 'http_requests_total{job="demo-app",code="404"}'
+        values: "0+5x90"
+      - series: 'up{job="demo-app",instance="a"}'
+        values: "1x90"
+    promql_expr_test:
+      - expr: job:slo_errors_per_request:ratio_rate5m
+        eval_time: 30m
+        exp_samples:
+          - labels: 'job:slo_errors_per_request:ratio_rate5m{job="demo-app",slo="availability"}'
+            value: 0
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: DemoAppErrorBudgetBurnFast
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: DemoAppErrorBudgetBurnSlow
+        exp_alerts: []
+      - eval_time: 70m
+        alertname: DemoAppHighLatency
+        exp_alerts: []
+
+  - name: all targets down fires DemoAppDown after 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="demo-app",instance="a"}'
+        values: "1x10 0x20"
+      - series: 'up{job="demo-app",instance="b"}'
+        values: "1x10 0x20"
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: DemoAppDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: DemoAppDown
+        exp_alerts:
+          - exp_labels:
+              job: demo-app
+              severity: critical
+            exp_annotations:
+              summary: demo-app has no healthy scrape targets
+              description: Prometheus cannot scrape any demo-app pod. The service is down or not being discovered.
+              runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoappdown
+
+  - name: one of two targets down is not an outage
+    interval: 1m
+    input_series:
+      - series: 'up{job="demo-app",instance="a"}'
+        values: "1x30"
+      - series: 'up{job="demo-app",instance="b"}'
+        values: "0x30"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DemoAppDown
+        exp_alerts: []
+
+  - name: no demo-app targets discovered fires DemoAppDown via absent()
+    interval: 1m
+    input_series:
+      - series: 'up{job="something-else",instance="x"}'
+        values: "1x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DemoAppDown
+        exp_alerts:
+          - exp_labels:
+              job: demo-app
+              severity: critical
+            exp_annotations:
+              summary: demo-app has no healthy scrape targets
+              description: Prometheus cannot scrape any demo-app pod. The service is down or not being discovered.
+              runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoappdown
+
+  - name: p95 latency above 500ms for 10 minutes
+    interval: 1m
+    # 10 requests/min: 1 <=100ms, 1 in (100ms,250ms], 1 in (250ms,500ms], 7 in (500ms,1s]
+    # p95 = 0.5 + (9.5 - 3) / (10 - 3) * 0.5 = ~0.964s
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="demo-app",le="0.1"}'
+        values: "0+1x30"
+      - series: 'http_request_duration_seconds_bucket{job="demo-app",le="0.25"}'
+        values: "0+2x30"
+      - series: 'http_request_duration_seconds_bucket{job="demo-app",le="0.5"}'
+        values: "0+3x30"
+      - series: 'http_request_duration_seconds_bucket{job="demo-app",le="1"}'
+        values: "0+10x30"
+      - series: 'http_request_duration_seconds_bucket{job="demo-app",le="+Inf"}'
+        values: "0+10x30"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DemoAppHighLatency
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: DemoAppHighLatency
+        exp_alerts:
+          - exp_labels:
+              job: demo-app
+              severity: warning
+            exp_annotations:
+              summary: demo-app p95 latency is above 500ms
+              description: "p95 latency is 964.3ms (objective: 500ms)."
+              runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoapphighlatency

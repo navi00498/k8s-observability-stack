@@ -1,0 +1,161 @@
+# SLO: 99.5% of demo-app API requests succeed (non-5xx) over 30 days -> error budget 0.5%.
+# Alerting follows the multi-window, multi-burn-rate approach from the Google SRE Workbook (ch. 5):
+#   page   : burn 14.4x over 1h (and 5m)  or  6x over 6h (and 30m)  -> budget gone in ~2-5 days
+#   ticket : burn 3x over 1d (and 2h)     or  1x over 3d (and 6h)
+# Unit tests: tests/rules/demo-app-slo.test.yaml (run `make test-rules`).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: demo-app-slo
+  labels:
+    app.kubernetes.io/name: demo-app
+spec:
+  groups:
+    - name: demo-app-slo.recording
+      interval: 30s
+      rules:
+        - record: job:slo_errors_per_request:ratio_rate5m
+          expr: |
+            (
+              sum by (job) (rate(http_requests_total{job="demo-app",code=~"5.."}[5m]))
+              or
+              0 * sum by (job) (rate(http_requests_total{job="demo-app"}[5m]))
+            )
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[5m]))
+          labels:
+            slo: availability
+        - record: job:slo_errors_per_request:ratio_rate30m
+          expr: |
+            (
+              sum by (job) (rate(http_requests_total{job="demo-app",code=~"5.."}[30m]))
+              or
+              0 * sum by (job) (rate(http_requests_total{job="demo-app"}[30m]))
+            )
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[30m]))
+          labels:
+            slo: availability
+        - record: job:slo_errors_per_request:ratio_rate1h
+          expr: |
+            (
+              sum by (job) (rate(http_requests_total{job="demo-app",code=~"5.."}[1h]))
+              or
+              0 * sum by (job) (rate(http_requests_total{job="demo-app"}[1h]))
+            )
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[1h]))
+          labels:
+            slo: availability
+        - record: job:slo_errors_per_request:ratio_rate2h
+          expr: |
+            (
+              sum by (job) (rate(http_requests_total{job="demo-app",code=~"5.."}[2h]))
+              or
+              0 * sum by (job) (rate(http_requests_total{job="demo-app"}[2h]))
+            )
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[2h]))
+          labels:
+            slo: availability
+        - record: job:slo_errors_per_request:ratio_rate6h
+          expr: |
+            (
+              sum by (job) (rate(http_requests_total{job="demo-app",code=~"5.."}[6h]))
+              or
+              0 * sum by (job) (rate(http_requests_total{job="demo-app"}[6h]))
+            )
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[6h]))
+          labels:
+            slo: availability
+        - record: job:slo_errors_per_request:ratio_rate1d
+          expr: |
+            (
+              sum by (job) (rate(http_requests_total{job="demo-app",code=~"5.."}[1d]))
+              or
+              0 * sum by (job) (rate(http_requests_total{job="demo-app"}[1d]))
+            )
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[1d]))
+          labels:
+            slo: availability
+        - record: job:slo_errors_per_request:ratio_rate3d
+          expr: |
+            (
+              sum by (job) (rate(http_requests_total{job="demo-app",code=~"5.."}[3d]))
+              or
+              0 * sum by (job) (rate(http_requests_total{job="demo-app"}[3d]))
+            )
+            /
+            sum by (job) (rate(http_requests_total{job="demo-app"}[3d]))
+          labels:
+            slo: availability
+        - record: job:http_requests:rate5m
+          expr: sum by (job) (rate(http_requests_total{job="demo-app"}[5m]))
+        - record: job:http_request_duration_seconds:p50_rate5m
+          expr: histogram_quantile(0.50, sum by (job, le) (rate(http_request_duration_seconds_bucket{job="demo-app"}[5m])))
+        - record: job:http_request_duration_seconds:p95_rate5m
+          expr: histogram_quantile(0.95, sum by (job, le) (rate(http_request_duration_seconds_bucket{job="demo-app"}[5m])))
+        - record: job:http_request_duration_seconds:p99_rate5m
+          expr: histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bucket{job="demo-app"}[5m])))
+    - name: demo-app-slo.alerts
+      rules:
+        - alert: DemoAppErrorBudgetBurnFast
+          expr: |
+            (
+              job:slo_errors_per_request:ratio_rate1h{job="demo-app"} > (14.4 * 0.005)
+              and
+              job:slo_errors_per_request:ratio_rate5m{job="demo-app"} > (14.4 * 0.005)
+            )
+            or
+            (
+              job:slo_errors_per_request:ratio_rate6h{job="demo-app"} > (6 * 0.005)
+              and
+              job:slo_errors_per_request:ratio_rate30m{job="demo-app"} > (6 * 0.005)
+            )
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: demo-app is burning its error budget fast
+            description: '{{ $value | humanizePercentage }} of requests are failing. At this rate the 30-day error budget is gone within days.'
+            runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoapperrorbudgetburnfast
+        - alert: DemoAppErrorBudgetBurnSlow
+          expr: |
+            (
+              job:slo_errors_per_request:ratio_rate1d{job="demo-app"} > (3 * 0.005)
+              and
+              job:slo_errors_per_request:ratio_rate2h{job="demo-app"} > (3 * 0.005)
+            )
+            or
+            (
+              job:slo_errors_per_request:ratio_rate3d{job="demo-app"} > 0.005
+              and
+              job:slo_errors_per_request:ratio_rate6h{job="demo-app"} > 0.005
+            )
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: demo-app is slowly burning its error budget
+            description: '{{ $value | humanizePercentage }} of requests are failing, above the sustainable rate for a 99.5% SLO.'
+            runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoapperrorbudgetburnslow
+        - alert: DemoAppHighLatency
+          expr: job:http_request_duration_seconds:p95_rate5m{job="demo-app"} > 0.5
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: demo-app p95 latency is above 500ms
+            description: 'p95 latency is {{ $value | humanizeDuration }} (objective: 500ms).'
+            runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoapphighlatency
+        - alert: DemoAppDown
+          expr: sum by (job) (up{job="demo-app"}) == 0 or absent(up{job="demo-app"})
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: demo-app has no healthy scrape targets
+            description: Prometheus cannot scrape any demo-app pod. The service is down or not being discovered.
+            runbook_url: https://github.com/navi00498/k8s-observability-stack/blob/main/docs/runbooks.md#demoappdown

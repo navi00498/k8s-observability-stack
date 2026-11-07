@@ -1,0 +1,91 @@
+# kube-prometheus-stack tuned for a single-node kind lab.
+fullnameOverride: kps
+
+# Control-plane components on kind bind to localhost and can't be scraped; skip them to avoid
+# permanent false-positive alerts.
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+defaultRules:
+  rules:
+    etcd: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeControllerManager: false
+    kubeProxy: false
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 2d
+    # Pick up ServiceMonitors / PodMonitors / PrometheusRules from every namespace, not just ones
+    # labelled with this Helm release.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 1536Mi
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 32Mi
+  config:
+    route:
+      receiver: "null"
+      group_by: [alertname, job, severity]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - receiver: "null"
+          matchers: [alertname = "Watchdog"]
+        - receiver: oncall-page
+          matchers: [severity = "critical"]
+        - receiver: team-ticket
+          matchers: [severity = "warning"]
+    # Lab receivers: wire these to Slack / PagerDuty / Opsgenie in a real environment.
+    receivers:
+      - name: "null"
+      - name: oncall-page
+      - name: team-ticket
+
+grafana:
+  adminPassword: admin # lab only - never do this outside a local cluster
+  grafana.ini:
+    auth.anonymous:
+      enabled: true
+      org_role: Viewer
+    dashboards:
+      default_home_dashboard_path: /tmp/dashboards/demo-app-slo.json
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      url: http://loki.monitoring.svc:3100
+      access: proxy
+      jsonData:
+        maxLines: 1000
+
+prometheus-node-exporter:
+  # kind nodes are containers; mounting the host root fs isn't possible there.
+  hostRootFsMount:
+    enabled: false

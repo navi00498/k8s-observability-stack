@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROMETHEUS_VERSION: "3.5.0"
+  KUBECONFORM_VERSION: "0.7.0"
+
+jobs:
+  static:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools (promtool, kubeconform)
+        run: |
+          curl -sSL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+            | tar -xz --strip-components=1 -C /usr/local/bin "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+          promtool --version | head -1 && kubeconform -v && yq --version && helm version --short
+      - run: pip install -r app/requirements.txt
+      - name: demo-app unit tests
+        run: make test-app
+      - name: SLO alert unit tests (promtool)
+        run: make test-rules
+      - name: Validate manifests, Helm values and dashboards
+        run: make repos lint
+      - name: Validate Alloy config syntax
+        run: |
+          yq '.alloy.configMap.content' helm/alloy.yaml > build/config.alloy
+          docker run --rm -v "$PWD/build:/w" grafana/alloy:v1.21.3 fmt /w/config.alloy > /dev/null
+
+  e2e:
+    name: End-to-end on kind
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: helm/kind-action@v1
+        with:
+          config: kind/cluster.yaml
+          cluster_name: obs-lab
+      - name: Build and load demo-app image
+        run: make image
+      - name: Install kube-prometheus-stack, Loki, Alloy
+        run: make install
+      - name: Deploy SLO rules, dashboard and demo-app
+        run: make apps
+      - name: Install screenshot tooling
+        run: npm install --no-save --no-package-lock puppeteer-core@24
+      - name: Verify pipeline and run chaos test
+        env:
+          CHAOS: "1"
+          SCREENSHOT_DIR: screenshots
+        run: scripts/verify.sh
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          if-no-files-found: ignore
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          kubectl get events -A --sort-by=.lastTimestamp | tail -40
+          kubectl -n demo logs deploy/demo-app --tail=20 || true
+          kubectl -n monitoring logs deploy/alloy --tail=50 || true
+          kubectl -n monitoring logs statefulset/loki --tail=50 || true

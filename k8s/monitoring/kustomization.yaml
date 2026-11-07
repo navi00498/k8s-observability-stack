@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: monitoring
+resources:
+  - prometheusrule-demo-app-slo.yaml
+generatorOptions:
+  disableNameSuffixHash: true
+configMapGenerator:
+  # The Grafana sidecar loads every ConfigMap labelled grafana_dashboard=1 as a dashboard.
+  - name: grafana-dashboard-demo-app-slo
+    files:
+      - dashboards/demo-app-slo.json
+    options:
+      labels:
+        grafana_dashboard: "1"
